@@ -1,6 +1,6 @@
 # This is a basic workflow to help you get started with Actions
 
-name: Build
+name: Build + Release
 
 # Controls when the action will run.
 on:
@@ -50,7 +50,8 @@ jobs:
           commit_hash=${GITHUB_SHA::7}
           echo "Latest commit hash is $commit_hash"
           echo "::set-output name=COMMIT_HASH::$commit_hash"
-  Build:
+
+  build:
     name: ${{ matrix.name }}
     strategy:
       matrix:
@@ -101,6 +102,7 @@ jobs:
         artifactPath: ${{ matrix.artifactPath }}
 
   Releaser:
+    needs: [get-commit-hash, build]
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
