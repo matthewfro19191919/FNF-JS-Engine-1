@@ -2,7 +2,6 @@
 
 name: Build
 
-
 # Controls when the action will run.
 on:
   # Triggers the workflow on push or pull request events but only for the master branch
@@ -10,7 +9,6 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-
 # For release builds
   workflow_call:
     inputs:
@@ -21,237 +19,116 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+permissions:
+  contents: write
+  discussions: write
+
+env:
+  PROJECT_NAME: JSEngine
+  REPO_PATH: matthewfro19191919/FNF-JS-Engine-1
+
 jobs:
-  # This workflow contains a single job called "build"
-  buildLinux:
+  get-commit-hash:
     runs-on: ubuntu-latest
-
+    outputs:
+      commit_hash: ${{ steps.get_commit_hash.outputs.COMMIT_HASH }}
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@main
-
-      - uses: krdlab/setup-haxe@master
-        with:
-          haxe-version: 4.3.6
-      - name: Restore Previous Cache
-        id: cache-build-linux-restore
-        uses: actions/cache/restore@main
-        with:
-          path: |
-            .haxelib/
-            export/release/linux/haxe/
-            export/release/linux/obj/
-          key: cache-linux-build
-      # Runs a set of commands using the runners shell
-      - name: Install Haxelib
+      - name: Check Repository
         run: |
-          sudo apt-get install libvlc-dev
-          sudo apt-get install libvlccore-dev
-          haxelib setup ~/haxelib
-          haxelib install hxcpp > /dev/null --quiet
-          chmod +x ./setup/unix.sh
-          sh ./setup/unix.sh
-      - name: Compile hxcpp
+          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "REPO_PATH: ${{ env.REPO_PATH }}"
+          if [[ "$GITHUB_REPOSITORY" != "${{ env.REPO_PATH }}" ]]; then
+            echo "Doesn't seem to be correct, returning SIGABRT..."
+            exit 6
+          else
+            echo "Seems to be correct..."
+          fi
+
+      - name: Get latest commit hash
+        id: get_commit_hash
         run: |
-          cd ~/haxelib/hxcpp/git/tools/run
-          haxe compile.hxml
-          cd ..
-          cd ./hxcpp
-          haxe compile.hxml
-          cd ../..
-      - name: Compile
-        run: haxelib run lime build linux -D ${{ inputs.buildFlags || 'commit' }}
-      - name: Clear Previous Cache
-        uses: actions/github-script@main
-        with:
-          script: |
-            try {
-            	const caches = await github.rest.actions.getActionsCacheList({
-            		owner: context.repo.owner,
-            		repo: context.repo.repo,
-            	})
-            	if (typeof caches.data.actions_caches != null && caches.data.actions_caches.length > 0) {
-            		for (const cache of caches.data.actions_caches) {
-            			if (cache.key == "cache-linux-build") {
-            				console.log('Clearing ' + cache.key + '...')
-            				await github.rest.actions.deleteActionsCacheById({
-            					owner: context.repo.owner,
-            					repo: context.repo.repo,
-            					cache_id: cache.id,
-            				})
-            				console.log("Previous Cache Cleared!")
-            			}
-            		}
-            	}
-            } catch (error) {
-            	console.log(error.message);
-            }
+          commit_hash=${GITHUB_SHA::7}
+          echo "Latest commit hash is $commit_hash"
+          echo "::set-output name=COMMIT_HASH::$commit_hash"
+  Build:
+    name: ${{ matrix.name }}
+    strategy:
+      matrix:
+        include:
+          - name: Windows
+            os: windows-2022
+            buildArgs: windows
+            setupCommand: .\"setup/windows.bat"
+            artifactName: windowsBuild-x86_64
+            artifactPath: export\release\windows\bin\*
+          - name: Linux
+            os: ubuntu-22.04
+            buildArgs: linux
+            setupCommand: sh ./setup/unix.sh
+            artifactName: linuxBuild-x86_64
+            artifactPath: export/release/linux/bin/*
+          - name: macOS x86_64
+            os: macos-15
+            setupCommand: sh ./setup/unix.sh
+            buildArgs: "mac -64 -D HXCPP_M64"
+            artifactName: macOSBuild-x86_64
+            artifactPath: export/release/macos/bin/*
+          - name: macOS ARM64
+            os: macos-15
+            setupCommand: sh ./setup/unix.sh
+            buildArgs: "mac -arm64 -D HXCPP_ARM64"
+            artifactName: macOSBuild-arm64
+            artifactPath: export/release/macos/bin/*
+          - name: Android
+            os: macos-15
+            buildArgs: "android -ONLY_ARMV7"
+            setupCommand: sh ./setup/unix.sh
+            artifactName: androidBuild
+            artifactPath: "export/release/android/bin/app/build/outputs/apk/release/*.apk"
+          - name: iOS
+            os: macos-15
+            buildArgs: "ios -nosign"
+            setupCommand: sh ./setup/unix.sh
+            artifactName: iOSBuild
+            artifactPath: "export/release/ios/build/Release-iphoneos/*.ipa"
+    uses: ./.github/workflows/build.yml
+    with:
+        name: ${{ matrix.name }}
+        os: ${{ matrix.os }}
+        buildArgs: ${{ matrix.buildArgs }}
+        setupCommand: ${{ matrix.setupCommand }}
+        artifactName: ${{ matrix.artifactName }}
+        artifactPath: ${{ matrix.artifactPath }}
 
-      - name: Save Current Cache
-        id: cache-build-linux-save
-        uses: actions/cache/save@main
-        with:
-          path: |
-            .haxelib/
-            export/release/linux/haxe/
-            export/release/linux/obj/
-          key: cache-linux-build
-      - name: Publish Artifact
-        uses: actions/upload-artifact@main
-        with:
-          name: linuxBuild
-          path: export/release/linux/bin
-
-  buildWindows:
-    runs-on: windows-latest
-
+  Releaser:
+    needs: [get-commit-hash, build]
+    runs-on: ubuntu-latest
+    permissions: write-all
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@main
+      - name: Download Android Build
+        uses: actions/download-artifact@main
+        with:
+           name: androidBuild
+           path: /home/runner
 
-      - uses: krdlab/setup-haxe@master
-        with:
-          haxe-version: 4.3.6
-      - name: Restore Previous Cache
-        id: cache-build-windows-restore
-        uses: actions/cache/restore@main
-        with:
-          path: |
-            .haxelib/
-            export/release/windows/haxe/
-            export/release/windows/obj/
-          key: cache-windows-build
-      # Runs a set of commands using the runners shell
-      - name: Install Haxelib
-        run: |
-          haxelib setup C:/haxelib
-          haxelib install hxcpp > /dev/null --quiet
-          .\"setup/windows.bat"
-        shell: cmd
-      - name: Compile hxcpp
-        run: |
-          cd C:/haxelib/hxcpp/git/tools/run
-          haxe compile.hxml
-          cd ..
-          cd ./hxcpp
-          haxe compile.hxml
-          cd ../..
-      - name: Compile
-        run: haxelib run lime build windows -D ${{ inputs.buildFlags || 'commit' }}
-      - name: Clear Previous Cache
-        uses: actions/github-script@main
-        with:
-          script: |
-            try {
-            	const caches = await github.rest.actions.getActionsCacheList({
-            		owner: context.repo.owner,
-            		repo: context.repo.repo,
-            	})
-            	if (typeof caches.data.actions_caches != null && caches.data.actions_caches.length > 0) {
-            		for (const cache of caches.data.actions_caches) {
-            			if (cache.key == "cache-windows-build") {
-            				console.log('Clearing ' + cache.key + '...')
-            				await github.rest.actions.deleteActionsCacheById({
-            					owner: context.repo.owner,
-            					repo: context.repo.repo,
-            					cache_id: cache.id,
-            				})
-            				console.log("Previous Cache Cleared!")
-            			}
-            		}
-            	}
-            } catch (error) {
-            	console.log(error.message);
-            }
+      - name: Move Android File
+        run: mv /home/runner/${{ env.PROJECT_NAME }}-release.apk /home/runner/${{ env.PROJECT_NAME }}-Android.apk
 
-      - name: Save Current Cache
-        id: cache-build-windows-save
-        uses: actions/cache/save@main
+      - name: Download iOS Build
+        uses: actions/download-artifact@main
         with:
-          path: |
-            .haxelib/
-            export/release/windows/haxe/
-            export/release/windows/obj/
-          key: cache-windows-build
-      - name: Publish Artifact
-        uses: actions/upload-artifact@main
-        with:
-          name: windowsBuild
-          path: export/release/windows/bin
-  buildMac:
-    runs-on: macos-latest
+           name: iOSBuild
+           path: ${{ github.workspace }}
 
-    steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@main
+      - name: Zip iOS Build For Release
+        run: zip -r /home/runner/${{ env.PROJECT_NAME }}-iOS.zip ${{ github.workspace }}/${{ env.PROJECT_NAME }}.ipa
 
-      - uses: krdlab/setup-haxe@master
+      - name: Publish The Release
+        uses: softprops/action-gh-release@v2
         with:
-          haxe-version: 4.3.4
-      - name: Restore Previous Cache
-        id: cache-build-macos-restore
-        uses: actions/cache/restore@main
-        with:
-          path: |
-            .haxelib/
-            export/release/macos/haxe/
-            export/release/macos/obj/
-          key: cache-macos-build
-      # Runs a set of commands using the runners shell
-      - name: Install Haxelib
-        run: |
-          haxelib setup ~/haxelib
-          haxelib install hxcpp > /dev/null --quiet
-          chmod +x ./setup/unix.sh
-          sh ./setup/unix.sh
-      - name: Compile hxcpp
-        run: |
-          cd ~/haxelib/hxcpp/git/tools/run
-          haxe compile.hxml
-          cd ..
-          cd ./hxcpp
-          haxe compile.hxml
-          cd ../..
-      - name: Compile
-        run: haxelib run lime build mac -D ${{ inputs.buildFlags || 'commit' }}
-      - name: Clear Previous Cache
-        uses: actions/github-script@main
-        with:
-          script: |
-            try {
-            	const caches = await github.rest.actions.getActionsCacheList({
-            		owner: context.repo.owner,
-            		repo: context.repo.repo,
-            	})
-            	if (typeof caches.data.actions_caches != null && caches.data.actions_caches.length > 0) {
-            		for (const cache of caches.data.actions_caches) {
-            			if (cache.key == "cache-macos-build") {
-            				console.log('Clearing ' + cache.key + '...')
-            				await github.rest.actions.deleteActionsCacheById({
-            					owner: context.repo.owner,
-            					repo: context.repo.repo,
-            					cache_id: cache.id,
-            				})
-            				console.log("Previous Cache Cleared!")
-            			}
-            		}
-            	}
-            } catch (error) {
-            	console.log(error.message);
-            }
-
-      - name: Save Current Cache
-        id: cache-build-macos-save
-        uses: actions/cache/save@main
-        with:
-          path: |
-            .haxelib/
-            export/release/macos/haxe/
-            export/release/macos/obj/
-          key: cache-macos-build
-      - name: Publish Artifact
-        uses: actions/upload-artifact@main
-        with:
-          name: macBuild
-          path: export/release/macos/bin
+          name: "DevBuild ${{ needs.get-commit-hash.outputs.commit_hash }}"
+          tag_name: "devbuild-${{ needs.get-commit-hash.outputs.commit_hash }}"
+          prerelease: true
+          files: |
+            /home/runner/*.apk
+            /home/runner/*.zip
