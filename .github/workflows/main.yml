@@ -101,7 +101,6 @@ jobs:
         artifactPath: ${{ matrix.artifactPath }}
 
   Releaser:
-    needs: [get-commit-hash, build]
     runs-on: ubuntu-latest
     permissions: write-all
     steps:
